@@ -44,6 +44,7 @@ pub trait AsyncModule: Send + Sync {
     fn pop_sq(&self) -> Option<AsyncCallArguments>;
     fn push_cq(&self, ret: AsyncCallReturnValue);
     fn pop_cq(&self) -> Option<AsyncCallReturnValue>;
+    fn event_loop(&self);
 }
 
 pub fn async_call(args: AsyncCallArguments) -> impl Future<Output = AsyncCallReturnValue> {
@@ -83,6 +84,7 @@ pub fn async_call(args: AsyncCallArguments) -> impl Future<Output = AsyncCallRet
 }
 
 pub struct TaskControlBlock {
+    /// TODO: remove Mutex
     pub task: Mutex<Pin<Box<dyn Future<Output = AsyncCallReturnValue> + Sync + Send>>>,
     pub task_id: usize,
     pub args: AsyncCallArguments,
@@ -95,9 +97,12 @@ pub struct Executor {
     pub task_table: HashMap<usize, Arc<TaskControlBlock>>,
 }
 
-pub struct AsyncModule1 {
+type HandlerBox = Box<dyn Fn((AsyncCallArguments, usize)) -> Pin<Box<dyn Future<Output = AsyncCallReturnValue> + Sync + Send>> + Sync + Send>;
+
+pub struct AsyncModuleImpl {
     // unchanged
     pub module_id: usize,
+    pub handler: HandlerBox,
     // Executor: Lock
     pub executor: Mutex<Executor>,
     // SQ & CQ: Lock-free
@@ -106,7 +111,7 @@ pub struct AsyncModule1 {
     pub cq: SegQueue<AsyncCallReturnValue>,
 }
 
-impl AsyncModule for AsyncModule1 {
+impl AsyncModule for AsyncModuleImpl {
     fn module_id(&self) -> usize {
         self.module_id
     }
@@ -139,66 +144,17 @@ impl AsyncModule for AsyncModule1 {
             .unwrap()
             .take()
     }
-}
 
-impl AsyncModule1 {
-    async fn handler(args: AsyncCallArguments, task_id: usize) -> AsyncCallReturnValue {
-        println!("into handler1");
-        let original_value: i32 = 100;
-        let async_call_args = AsyncCallArguments {
-            caller_module_id: 1,
-            caller_task_id: task_id,
-            callee_module_id: 2,
-            data: [&original_value as *const _ as usize, 0, 0, 0, 0],
-        };
-        println!("handler1: before async call");
-        let async_call_ret = async_call(async_call_args).await;
-        println!("handler1: after async call");
-        assert_eq!(original_value, 200);
-        assert_eq!(async_call_ret.status, 233);
-        AsyncCallReturnValue {
-            caller_task_id: args.caller_task_id,
-            status: 666,
-        }
-    }
-
-    pub fn new(module_id: usize) -> Self {
-        Self {
-            module_id,
-            executor: Mutex::new(Executor {
-                current_task_id: 0,
-                ready_queue: VecDeque::new(),
-                task_table: HashMap::new(),
-            }),
-            sq: SegQueue::new(),
-            cq: SegQueue::new(),
-        }
-    }
-
-    pub fn spawn_task(&self, args: AsyncCallArguments) {
-        let mut executor = self.executor.lock().unwrap();
-        executor.current_task_id += 1;
-        let current_task_id = executor.current_task_id;
-        let tcb = Arc::new(TaskControlBlock {
-            task: Mutex::new(Box::pin((Self::handler)(args, current_task_id))),
-            task_id: current_task_id,
-            args,
-            ret: Mutex::new(None),
-        });
-        executor.ready_queue.push_back(Arc::clone(&tcb));
-        executor.task_table.insert(current_task_id, tcb);
-    }
-
-    pub fn event_loop(&self) {
+    fn event_loop(&self) {
         loop {
             // scanning SQ -> try to spawn new tasks
             while let Some(args) = self.pop_sq() {
-                println!("event_loop1 from SQ: args = {:?}", args);
+                //println!("event_loop1 from SQ: args = {:?}", args);
                 self.spawn_task(args);
             }
             // scanning CQ -> try tp wake up blocked tasks
             while let Some(ret) = self.pop_cq() {
-                println!("event_loop1 from CQ: ret = {:?}", ret);
+                //println!("event_loop1 from CQ: ret = {:?}", ret);
                 let mut executor = self.executor.lock().unwrap();
                 // update ret in the TCB so that AsyncCallFuture::poll
                 // will return Poll::Ready
@@ -216,10 +172,16 @@ impl AsyncModule1 {
                 let waker = unsafe { Waker::from_raw(raw_waker) };
                 let mut cx = Context::from_waker(&waker);
                 //let task = task.lock().unwrap().task.clone();
+                let caller_module_id = task.args.caller_module_id;
                 if let Poll::Ready(ret) = task.task.lock().unwrap().as_mut().poll(&mut cx) {
                     // as an output module, here we do not need to write to CQ
                     // we can just print some info
-                    println!("event_loop1: ret = {:?}", ret);
+                    println!("event_loop: ret = {:?}", ret);
+                    MOD_MANAGER
+                        .write()
+                        .unwrap()
+                        .get_module(caller_module_id)
+                        .push_cq(ret);
                     // TODO: remove this task from the task table
                 } // else: do nothing, do not put the task back to the ready_queue
             }
@@ -227,65 +189,11 @@ impl AsyncModule1 {
     }
 }
 
-pub struct AsyncModule2 {
-    // unchanged
-    pub module_id: usize,
-    // Executor: Lock
-    pub executor: Mutex<Executor>,
-    // SQ & CQ: Lock-free
-    pub sq: SegQueue<AsyncCallArguments>,
-    pub cq: SegQueue<AsyncCallReturnValue>,
-}
-
-impl AsyncModule for AsyncModule2 {
-    fn module_id(&self) -> usize {
-        self.module_id
-    }
-
-    fn push_sq(&self, args: AsyncCallArguments) {
-        self.sq.push(args);
-    }
-
-    fn pop_sq(&self) -> Option<AsyncCallArguments> {
-        self.sq.pop()
-    }
-
-    #[allow(unused)]
-    fn push_cq(&self, ret: AsyncCallReturnValue) {
-        self.cq.push(ret);
-    }
-
-    fn pop_cq(&self) -> Option<AsyncCallReturnValue> {
-        self.cq.pop()
-    }
-
-    fn task_async_call_ret(&self, task_id: usize) -> Option<AsyncCallReturnValue> {
-        self.executor
-            .lock()
-            .unwrap()
-            .task_table
-            .get(&task_id)
-            .unwrap()
-            .ret
-            .lock()
-            .unwrap()
-            .take()
-    }
-}
-
-impl AsyncModule2 {
-    async fn handler(args: AsyncCallArguments, _task_id: usize) -> AsyncCallReturnValue {
-        let value = unsafe { &mut *(args.data[0] as *mut i32) };
-        *value *= 2;
-        AsyncCallReturnValue {
-            caller_task_id: args.caller_task_id,
-            status: 233,
-        }
-    }
-
-    pub fn new(module_id: usize) -> Self {
+impl AsyncModuleImpl {
+    pub fn new(module_id: usize, handler: HandlerBox) -> Self {
         Self {
             module_id,
+            handler,
             executor: Mutex::new(Executor {
                 current_task_id: 0,
                 ready_queue: VecDeque::new(),
@@ -301,15 +209,18 @@ impl AsyncModule2 {
         executor.current_task_id += 1;
         let current_task_id = executor.current_task_id;
         let tcb = Arc::new(TaskControlBlock {
-            task: Mutex::new(Box::pin((Self::handler)(args, executor.current_task_id))),
-            task_id: executor.current_task_id,
+            task: Mutex::new((self.handler)((args, current_task_id))),
+            task_id: current_task_id,
             args,
             ret: Mutex::new(None),
         });
         executor.ready_queue.push_back(Arc::clone(&tcb));
         executor.task_table.insert(current_task_id, tcb);
     }
+}
 
+/*
+impl AsyncModule2 {
     pub fn event_loop(&self) {
         loop {
             // scanning SQ -> try to spawn new tasks
@@ -349,7 +260,7 @@ impl AsyncModule2 {
         }
     }
 }
-
+*/
 pub struct AsyncModuleManager {
     //current_module_id: usize,
     module_table: HashMap<usize, Arc<dyn AsyncModule>>,

@@ -4,8 +4,8 @@ use modules::*;
 use std::sync::Arc;
 use std::thread;
 
-/*
 async fn handler1(args: AsyncCallArguments, task_id: usize) -> AsyncCallReturnValue {
+    println!("into handler1");
     let original_value: i32 = 100;
     let async_call_args = AsyncCallArguments {
         caller_module_id: 1,
@@ -13,12 +13,14 @@ async fn handler1(args: AsyncCallArguments, task_id: usize) -> AsyncCallReturnVa
         callee_module_id: 2,
         data: [&original_value as *const _ as usize, 0, 0, 0, 0],
     };
+    println!("handler1: before async call");
     let async_call_ret = async_call(async_call_args).await;
+    println!("handler1: after async call");
     assert_eq!(original_value, 200);
     assert_eq!(async_call_ret.status, 233);
     AsyncCallReturnValue {
         caller_task_id: args.caller_task_id,
-        status: 0,
+        status: 666,
     }
 }
 
@@ -30,11 +32,10 @@ async fn handler2(args: AsyncCallArguments, _task_id: usize) -> AsyncCallReturnV
         status: 233,
     }
 }
-*/
 
 fn main() {
-    let module1 = Arc::new(AsyncModule1::new(1));
-    let module2 = Arc::new(AsyncModule2::new(2));
+    let module1 = Arc::new(AsyncModuleImpl::new(1, Box::new(|(args, task_id)| Box::pin(handler1(args, task_id)))));
+    let module2 = Arc::new(AsyncModuleImpl::new(2, Box::new(|(args, task_id)| Box::pin(handler2(args, task_id)))));
     MOD_MANAGER
         .write()
         .unwrap()
