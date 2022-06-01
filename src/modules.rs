@@ -1,6 +1,3 @@
-use crossbeam::queue::SegQueue;
-use lazy_static::*;
-use std::collections::{HashMap, VecDeque};
 /// TODO:
 ///
 /// 1. removing CQ?(comparison)
@@ -15,9 +12,10 @@ use std::collections::{HashMap, VecDeque};
 /// This mean that we do not need to manually construct the
 /// AsyncCallArguments.
 ///
-/// 4. dynamic binding of handler per module
-///
-/// 5. compatibility with Rust async ecosystem
+/// 4. compatibility with Rust async ecosystem
+use crossbeam::queue::SegQueue;
+use lazy_static::*;
+use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, RwLock};
@@ -36,6 +34,31 @@ pub struct AsyncCallReturnValue {
     pub caller_task_id: usize,
     pub status: usize,
 }
+
+/*
+/// 3 sub traits
+pub trait EventDrivenSystem {
+    /// poll SQ -> spawn tasks & add to scheduler
+    /// poll CQ -> wakeup tasks & add back to scheduler
+    /// scheduler select a task
+    fn event_loop(&self);
+}
+
+pub trait TaskScheduler {
+    fn spawn_task(&self) -> usize;
+    fn block_task(&self, task_id: usize);
+    fn wakeup_task(&self, task_id: usize);
+    fn remove_task(&self, task_id: usize);
+}
+
+/// Submission & Completion Queue
+pub trait SCQueue {
+    fn push_sq(&self, args: AsyncCallArguments);
+    fn pop_sq(&self) -> Option<AsyncCallArguments>;
+    fn push_cq(&self, ret: AsyncCallReturnValue);
+    fn pop_cq(&self) -> Option<AsyncCallReturnValue>;
+}
+*/
 
 pub trait AsyncModule: Send + Sync {
     fn module_id(&self) -> usize;
@@ -97,7 +120,13 @@ pub struct Executor {
     pub task_table: HashMap<usize, Arc<TaskControlBlock>>,
 }
 
-type HandlerBox = Box<dyn Fn((AsyncCallArguments, usize)) -> Pin<Box<dyn Future<Output = AsyncCallReturnValue> + Sync + Send>> + Sync + Send>;
+type HandlerBox = Box<
+    dyn Fn(
+            (AsyncCallArguments, usize),
+        ) -> Pin<Box<dyn Future<Output = AsyncCallReturnValue> + Sync + Send>>
+        + Sync
+        + Send,
+>;
 
 pub struct AsyncModuleImpl {
     // unchanged

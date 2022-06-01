@@ -34,8 +34,14 @@ async fn handler2(args: AsyncCallArguments, _task_id: usize) -> AsyncCallReturnV
 }
 
 fn main() {
-    let module1 = Arc::new(AsyncModuleImpl::new(1, Box::new(|(args, task_id)| Box::pin(handler1(args, task_id)))));
-    let module2 = Arc::new(AsyncModuleImpl::new(2, Box::new(|(args, task_id)| Box::pin(handler2(args, task_id)))));
+    let module1 = Arc::new(AsyncModuleImpl::new(
+        1,
+        Box::new(|(args, task_id)| Box::pin(handler1(args, task_id))),
+    ));
+    let module2 = Arc::new(AsyncModuleImpl::new(
+        2,
+        Box::new(|(args, task_id)| Box::pin(handler2(args, task_id))),
+    ));
     MOD_MANAGER
         .write()
         .unwrap()
